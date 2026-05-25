@@ -8,11 +8,18 @@ IMAGES=(ansible auto-releaser clone docker-buildx renovate sccache)
 
 skopeo_login() {
   local registry="$1" user="$2" pass="$3" required="${4:-false}"
-  [[ -z "$user" || -z "$pass" ]] && {
+
+  if [[ -z "$user" && -z "$pass" ]]; then
     [[ "$required" == true ]] && { echo "Missing credentials for $registry" >&2; exit 1; }
     return 0
-  }
-  echo "$pass" | skopeo login -u "$user" --password-stdin "$registry"
+  fi
+
+  if [[ -z "$user" || -z "$pass" ]]; then
+    echo "Incomplete credentials for $registry" >&2
+    exit 1
+  fi
+
+  printf '%s\n' "$pass" | skopeo login -u "$user" --password-stdin "$registry"
 }
 
 skopeo_login "${SOURCE%%/*}" "${SOURCE_REGISTRY_USERNAME:-}" "${SOURCE_REGISTRY_PASSWORD:-}"
