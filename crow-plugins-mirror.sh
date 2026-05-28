@@ -55,6 +55,25 @@ retry() {
   done
 }
 
+copy_image() {
+  local src="$1" dst="$2" output status
+
+  if output="$(regctl -v info image copy "$src" "$dst" 2>&1)"; then
+    status=0
+  else
+    status=$?
+  fi
+
+  if ((status != 0)); then
+    while IFS= read -r line; do
+      printf '    %s\n' "$line" >&2
+    done <<<"$output"
+    return "$status"
+  fi
+
+  printf '  copied to %s\n' "$dst"
+}
+
 group_start "authenticate registries"
 regctl_login "${SOURCE%%/*}" "${SOURCE_REGISTRY_USERNAME:-}" "${SOURCE_REGISTRY_PASSWORD:-}"
 regctl_login "${TARGET%%/*}" "${TARGET_REGISTRY_USERNAME:-}" "${TARGET_REGISTRY_PASSWORD:-}" true
@@ -67,8 +86,8 @@ for image in "${IMAGES[@]}"; do
   log "found ${#tags[@]} tags"
 
   for tag in "${tags[@]}"; do
-    log "  copying $image:$tag"
-    retry 5 regctl -v info image copy "$SOURCE/$image:$tag" "$TARGET/$image:$tag"
+    log "copying to $image:$tag"
+    retry 5 copy_image "$SOURCE/$image:$tag" "$TARGET/$image:$tag"
   done
 
   log "done $image"
