@@ -26,16 +26,20 @@ CURRENT_GROUP=""
 
 log() { printf '%s\n' "$*"; }
 
-annotation() {
-  local level="$1"
-  shift
-  [[ -n "${GITHUB_ACTIONS:-}" ]] && printf '::%s::%s\n' "$level" "$*"
-  return 0
+emit() {
+  local level="$1" prefix="$2" fd="$3"
+  shift 3
+
+  if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
+    printf '::%s::%s\n' "$level" "$*"
+  else
+    printf '%s%s\n' "$prefix" "$*" >&"$fd"
+  fi
 }
 
-notice() { annotation notice "$*"; log "$*"; }
-warn() { annotation warning "$*"; log "warning: $*"; }
-error() { annotation error "$*"; log "error: $*" >&2; }
+notice() { emit notice "" 1 "$*"; }
+warn() { emit warning "warning: " 1 "$*"; }
+error() { emit error "error: " 2 "$*"; }
 
 group_start() {
   CURRENT_GROUP="$*"
