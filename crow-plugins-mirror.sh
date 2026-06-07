@@ -55,6 +55,7 @@ fmt_elapsed() {
 }
 
 stat_file() { printf '%s/stats/%s.stat' "$TMP_DIR" "$1"; }
+log_file() { printf '%s/logs/%s.log' "$TMP_DIR" "$1"; }
 
 write_stat() {
   local image="$1" tags="$2" copied="$3" current="$4" failed="$5" elapsed="$6"
@@ -186,7 +187,6 @@ mirror_image() {
   local -a all_tags=() tags=()
 
   started_at=$(date +%s)
-  group_start "mirror $image"
 
   mapfile -t all_tags < <(regctl tag ls "$SOURCE/$image")
   for tag in "${all_tags[@]}"; do
@@ -220,15 +220,24 @@ mirror_image() {
   fi
 
   write_stat "$image" "${#tags[@]}" "$copied" "$current" "$failed" "$elapsed"
-  group_end
   ((failed == 0))
+}
+
+flush_image_log() {
+  local image="$1" file
+  file=$(log_file "$image")
+  [[ -s "$file" ]] || return 0
+
+  group_start "mirror $image"
+  cat "$file"
+  group_end
 }
 
 run_parallel() {
   local running=0 failed=0 image
 
   for image in "${IMAGES[@]}"; do
-    mirror_image "$image" &
+    mirror_image "$image" >"$(log_file "$image")" 2>&1 &
     if ((++running >= MAX_JOBS)); then
       wait -n || failed=1
       running=$((running - 1))
@@ -240,11 +249,15 @@ run_parallel() {
     running=$((running - 1))
   done
 
+  for image in "${IMAGES[@]}"; do
+    flush_image_log "$image"
+  done
+
   return "$failed"
 }
 
 check_deps
-mkdir -p "$TMP_DIR/stats"
+mkdir -p "$TMP_DIR/stats" "$TMP_DIR/logs"
 
 [[ "$DRY_RUN" == "true" ]] && warn "DRY_RUN=true - no images will be copied"
 
