@@ -10,9 +10,10 @@ readonly SCRIPT_DIR
 
 : "${MIRRORS_FILE:=$SCRIPT_DIR/mirrors.json}"
 : "${TAG_FILTER:=.*}"
+: "${TAG_IGNORE:=}"
 : "${MAX_JOBS:=4}"
 : "${DRY_RUN:=false}"
-readonly MIRRORS_FILE TAG_FILTER MAX_JOBS DRY_RUN
+readonly MIRRORS_FILE TAG_FILTER TAG_IGNORE MAX_JOBS DRY_RUN
 
 readonly STARTED_AT=$(date +%s)
 readonly TMP_DIR=$(mktemp -d)
@@ -79,7 +80,7 @@ _regctl_stderr() {
 stat_file() { printf '%s/stats/%s.stat' "$TMP_DIR" "$1"; }
 
 write_stat() {
-  printf '%s|%s|%s|%s|%s|%s\n' "$@" >"$(stat_file "$1")"
+  printf '%s|%s|%s|%s|%s|%s|%s\n' "$@" >"$(stat_file "$1")"
 }
 
 stat_sum() {
@@ -107,14 +108,14 @@ write_summary() {
     if compgen -G "$TMP_DIR/stats/*.stat" >/dev/null 2>&1; then
       printf '\nimages\n'
       local prev_group=""
-      while IFS='|' read -r key tags copied current failed elapsed; do
+      while IFS='|' read -r key tags copied current failed elapsed skipped; do
         local grp="${key%%/*}" img="${key#*/}"
         if [[ "$grp" != "$prev_group" ]]; then
           printf '  [%s]\n' "$grp"
           prev_group="$grp"
         fi
-        printf '    %-14s tags=%s copied=%s current=%s failed=%s duration=%s\n' \
-          "$img" "$tags" "$copied" "$current" "$failed" "$elapsed"
+        printf '    %-14s tags=%s copied=%s current=%s skipped=%s failed=%s duration=%s\n' \
+          "$img" "$tags" "$copied" "$current" "$skipped" "$failed" "$elapsed"
       done < <(sort "$TMP_DIR"/stats/*.stat)
     fi
     printf '```\n'
@@ -161,16 +162,20 @@ regctl_login() {
 image_digest() { regctl image digest "$1" 2>/dev/null; }
 
 retry() {
-  local max="$1" i=1
+  local max="$1" i=1 rc
   shift
   for (( ; i <= max; i++)); do
-    "$@" && return 0
+    "$@"
+    rc=$?
+    ((rc == 0)) && return 0
+    # ponytail: source 404 = permanent, no retry
+    ((rc == 66)) && return 66
     if ((i < max)); then
       log "  retry ${i}/${max}: $*"
       sleep "$((i * 5))"
     else
       log "  failed after ${max} attempts: $*"
-      return 1
+      return "$rc"
     fi
   done
 }
@@ -183,7 +188,11 @@ copy_image() {
   if output=$(regctl image copy "$1" "$2" 2>&1); then
     return 0
   fi
-  # ponytail: log to file, no ::error:: annotation spam. Caller aggregates.
+  # ponytail: source 404 = tag deleted/gc'd, skip silently.
+  if grep -q 'MANIFEST_UNKNOWN' <<<"$output"; then
+    log "  ${C_GRAY}skipped${C_RESET} $1 -> $2 (source 404)"
+    return 66
+  fi
   log "  ${C_RED}copy failed:${C_RESET} $1 -> $2"
   while IFS= read -r line; do printf '    %s\n' "$line"; done <<<"$output"
   return 1
@@ -200,6 +209,30 @@ copy_if_changed() {
   retry 5 copy_image "$src" "$dst"
 }
 
+# ── tag ignore helpers ─────────────────────────────────────────────────
+
+# ponytail: check if tag should be ignored (TAG_IGNORE env + mirrors.json)
+_tag_ignored() {
+  local tag="$1" ign
+  [[ -z "${TAG_IGNORE:-}${GROUP_TAG_IGNORE:-}" ]] && return 1
+  # mirrors.json ignore_tags: pipe-delimited exact matches (set by load_mirrors)
+  if [[ -n "${GROUP_TAG_IGNORE:-}" ]]; then
+    while IFS= read -r ign; do
+      [[ "$tag" == "$ign" ]] && return 0
+    done < <(tr '|' '\n' <<<"$GROUP_TAG_IGNORE")
+  fi
+  # TAG_IGNORE env: comma/pipe list or regex
+  [[ -n "${TAG_IGNORE:-}" ]] || return 1
+  if [[ "$TAG_IGNORE" == *[,\|]* ]]; then
+    while IFS= read -r ign; do
+      ign="${ign#"${ign%%[![:space:]]*}"}"; ign="${ign%"${ign##*[![:space:]]}"}"
+      [[ "$tag" == "$ign" ]] && return 0
+    done < <(tr ',|' '\n' <<<"$TAG_IGNORE")
+  else
+    [[ "$tag" =~ $TAG_IGNORE ]]
+  fi
+}
+
 # ── mirror single image ─────────────────────────────────────────────────
 
 # ponytail: fetch tags in foreground so "checking" appears instantly.
@@ -208,7 +241,7 @@ mirror_image() {
   local image="$1" source="$2" target="$3" group_id="$4" live_fd="$5"
   shift 5
   local -a tags=("$@")
-  local copied=0 current=0 failed=0 rc
+  local copied=0 current=0 failed=0 skipped=0 rc
 
   local start=$(date +%s)
 
@@ -225,6 +258,7 @@ mirror_image() {
     "$image" "${#tags[@]}" "${#all_tags[@]}" "$filtered" >&"$live_fd"
 
   for tag in "${tags[@]}"; do
+    _tag_ignored "$tag" && { ((skipped++)); continue; }
     if copy_if_changed "$source/$image:$tag" "$target/$image:$tag"; then
       ((copied++))
       printf "  ${C_GREEN}copied${C_RESET}  $image:$tag\n" >&"$live_fd"
@@ -233,6 +267,8 @@ mirror_image() {
       rc=$?
       if ((rc == 10)); then
         ((current++))
+      elif ((rc == 66)); then
+        ((skipped++))
       else
         ((failed++))
       fi
@@ -242,12 +278,12 @@ mirror_image() {
   local elapsed
   elapsed=$(elapsed_str $(($(date +%s) - start)))
   if ((copied > 0)); then
-    log "  ${C_MAGENTA}done${C_RESET} $image: copied=$copied current=$current failed=$failed ${C_GRAY}(${elapsed})${C_RESET}"
+    log "  ${C_MAGENTA}done${C_RESET} $image: copied=$copied current=$current skipped=$skipped failed=$failed ${C_GRAY}(${elapsed})${C_RESET}"
   else
-    log "  ${C_MAGENTA}done${C_RESET} $image: no changes, current=$current failed=$failed ${C_GRAY}(${elapsed})${C_RESET}"
+    log "  ${C_MAGENTA}done${C_RESET} $image: no changes, current=$current skipped=$skipped failed=$failed ${C_GRAY}(${elapsed})${C_RESET}"
   fi
 
-  write_stat "$group_id/$image" "${#tags[@]}" "$copied" "$current" "$failed" "$elapsed"
+  write_stat "$group_id/$image" "${#tags[@]}" "$copied" "$current" "$failed" "$elapsed" "$skipped"
   return $((failed == 0 ? 0 : 1))
 }
 
@@ -376,7 +412,10 @@ load_mirrors() {
     target=$(jq -r .target <<<"$row")
     group_id="${target##*/}"
     mapfile -t imgs < <(jq -r '.images[]' <<<"$row")
+    GROUP_TAG_IGNORE=$(jq -r '[.ignore_tags[]?] | join("|")' <<<"$row")
+    export GROUP_TAG_IGNORE
     mirror_group "$source" "$target" "$group_id" "${imgs[@]}" || rc=1
+    unset GROUP_TAG_IGNORE
   done < <(jq -c '.[]' "$MIRRORS_FILE")
   return "$rc"
 }
@@ -392,5 +431,5 @@ load_mirrors
 run_status=$?
 
 notice ""
-notice "mirror complete: copied=$(stat_sum 3) current=$(stat_sum 4) failed=$(stat_sum 5)"
+notice "mirror complete: copied=$(stat_sum 3) current=$(stat_sum 4) skipped=$(stat_sum 7) failed=$(stat_sum 5)"
 exit "$run_status"
