@@ -22,6 +22,19 @@ GROUP_COUNT=0
 IMAGE_COUNT=0
 VERBOSE="${VERBOSE:-false}"
 
+# ── colors ──────────────────────────────────────────────────────────────
+
+if [[ -z "${NO_COLOR:-}" ]]; then
+  if [[ -t 1 || -n "${GITHUB_ACTIONS:-}" ]]; then
+    C_CYAN=$'\033[36m' C_GREEN=$'\033[32m' C_MAGENTA=$'\033[35m'
+    C_RED=$'\033[31m'  C_GRAY=$'\033[90m'  C_RESET=$'\033[0m'
+  else
+    C_CYAN='' C_GREEN='' C_MAGENTA='' C_RED='' C_GRAY='' C_RESET=''
+  fi
+else
+  C_CYAN='' C_GREEN='' C_MAGENTA='' C_RED='' C_GRAY='' C_RESET=''
+fi
+
 # ── helpers ─────────────────────────────────────────────────────────────
 
 log()        { printf '%s\n' "$*"; }
@@ -171,7 +184,7 @@ copy_image() {
     return 0
   fi
   # ponytail: log to file, no ::error:: annotation spam. Caller aggregates.
-  log "  copy failed: $1 -> $2"
+  log "  ${C_RED}copy failed:${C_RESET} $1 -> $2"
   while IFS= read -r line; do printf '    %s\n' "$line"; done <<<"$output"
   return 1
 }
@@ -208,13 +221,14 @@ mirror_image() {
     [[ "$tag" =~ $TAG_FILTER ]] && tags+=("$tag")
   done
   filtered=$(( ${#all_tags[@]} - ${#tags[@]} ))
-  printf '  checking %s: %s tags (%d total, %d filtered)\n' \
+  printf "  ${C_GREEN}checking${C_RESET} %s: %s tags (%d total, %d filtered)\n" \
     "$image" "${#tags[@]}" "${#all_tags[@]}" "$filtered" >&"$live_fd"
 
   for tag in "${tags[@]}"; do
     if copy_if_changed "$source/$image:$tag" "$target/$image:$tag"; then
       ((copied++))
-      log "  copied  $image:$tag"
+      printf "  ${C_GREEN}copied${C_RESET}  $image:$tag\n" >&"$live_fd"
+      log "  ${C_GREEN}copied${C_RESET}  $image:$tag"
     else
       rc=$?
       if ((rc == 10)); then
@@ -228,9 +242,9 @@ mirror_image() {
   local elapsed
   elapsed=$(elapsed_str $(($(date +%s) - start)))
   if ((copied > 0)); then
-    log "  done $image: copied=$copied current=$current failed=$failed ($elapsed)"
+    log "  ${C_MAGENTA}done${C_RESET} $image: copied=$copied current=$current failed=$failed ${C_GRAY}(${elapsed})${C_RESET}"
   else
-    log "  done $image: no changes, current=$current failed=$failed ($elapsed)"
+    log "  ${C_MAGENTA}done${C_RESET} $image: no changes, current=$current failed=$failed ${C_GRAY}(${elapsed})${C_RESET}"
   fi
 
   write_stat "$group_id/$image" "${#tags[@]}" "$copied" "$current" "$failed" "$elapsed"
@@ -256,8 +270,8 @@ run_parallel() {
     for img in "${images[@]}"; do
       [[ -n "${flushed[$img]:-}" ]] && continue
       [[ -s "$logdir/$img.log" ]] || continue
-      tail -1 "$logdir/$img.log" 2>/dev/null | grep -q '^  done' || continue
-      { group_start "$group_id/$img"; cat "$logdir/$img.log"; group_end; }
+      tail -1 "$logdir/$img.log" 2>/dev/null | sed $'s/\033\\[[0-9;]*m//g' | grep -q '^  done' || continue
+      { cat "$logdir/$img.log"; }
       flushed[$img]=1
     done
   }
@@ -326,7 +340,7 @@ mirror_group() {
     [[ -z "$tgt_pass" ]] && tgt_pass=$(cred_field "$tgt_host" destination password)
   fi
 
-  notice "[$group_id] $source -> $target"
+  notice "${C_CYAN}[$group_id]${C_RESET} $source -> $target"
 
   regctl_login "$src_host" "$src_user" "$src_pass"
   regctl_login "$tgt_host" "$tgt_user" "$tgt_pass" true
