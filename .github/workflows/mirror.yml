@@ -1,25 +1,25 @@
 name: Container mirror
 
 on:
-  schedule:
-    - cron: '0 */2 * * *'
-  workflow_dispatch:
+    schedule:
+        - cron: "0 */2 * * *"
+    workflow_dispatch:
 
 jobs:
-  mirror:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    env:
-      NO_COLOR: '1'
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Install regctl
-        uses: regclient/actions/regctl-installer@main
-
-      - name: Run mirror script
+    mirror:
+        runs-on: ubuntu-latest
+        permissions:
+            contents: read
         env:
-          REGISTRY_CREDENTIALS: ${{ secrets.REGISTRY_CREDENTIALS }}
-        run: bash ./container-mirror.sh
+            NO_COLOR: "1"
+        steps:
+            - name: Check out repository
+              uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+            - name: Install regctl
+              uses: regclient/actions/regctl-installer@main
+
+            - name: Run mirror script
+              env:
+                  REGISTRY_CREDENTIALS: ${{ secrets.REGISTRY_CREDENTIALS }}
+              run: bash ./container-mirror.sh

@@ -6,23 +6,23 @@ Mirrors container images from multiple source registries to target registries.
 
 Defined in [`mirrors.json`](./mirrors.json):
 
-| Source | Target | Images |
-|--------|--------|--------|
-| `codefloe.com/crow-plugins` | `quay.io/amrkmn/crow` | ansible, auto-releaser, clone, docker-buildx, renovate, sccache |
-| `codeberg.org/forgejo` | `quay.io/amrkmn/forgejo` | forgejo, runner |
+| Source                      | Target                   | Images                                                          |
+| --------------------------- | ------------------------ | --------------------------------------------------------------- |
+| `codefloe.com/crow-plugins` | `quay.io/amrkmn/crow`    | ansible, auto-releaser, clone, docker-buildx, renovate, sccache |
+| `codeberg.org/forgejo`      | `quay.io/amrkmn/forgejo` | forgejo, runner                                                 |
 
 To add a new mirror group, add an entry to `mirrors.json`.
 
 ## Environment
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MIRRORS_FILE` | `mirrors.json` | Path to mirror group definitions |
-| `REGISTRY_CREDENTIALS` | — | JSON string with registry credentials |
-| `REGISTRY_CREDENTIALS_FILE` | `.creds.json` | Path to credentials JSON file |
-| `TAG_FILTER` | `.*` | ERE regex for tags to sync |
-| `MAX_JOBS` | `4` | Parallel image mirrors per group |
-| `DRY_RUN` | `false` | `true` = print copies without executing |
+| Variable                    | Default        | Description                             |
+| --------------------------- | -------------- | --------------------------------------- |
+| `MIRRORS_FILE`              | `mirrors.json` | Path to mirror group definitions        |
+| `REGISTRY_CREDENTIALS`      | —              | JSON string with registry credentials   |
+| `REGISTRY_CREDENTIALS_FILE` | `.creds.json`  | Path to credentials JSON file           |
+| `TAG_FILTER`                | `.*`           | ERE regex for tags to sync              |
+| `MAX_JOBS`                  | `4`            | Parallel image mirrors per group        |
+| `DRY_RUN`                   | `false`        | `true` = print copies without executing |
 
 ### Single-group mode (ad-hoc)
 
@@ -41,13 +41,13 @@ Credentials live in a JSON file (or a `REGISTRY_CREDENTIALS` secret in CI):
 
 ```json
 {
-  "source": {
-    "codefloe.com": { "user": "...", "password": "..." },
-    "codeberg.org": { "user": "...", "password": "..." }
-  },
-  "destination": {
-    "quay.io": { "user": "...", "password": "..." }
-  }
+    "source": {
+        "codefloe.com": { "user": "...", "password": "..." },
+        "codeberg.org": { "user": "...", "password": "..." }
+    },
+    "destination": {
+        "quay.io": { "user": "...", "password": "..." }
+    }
 }
 ```
 
