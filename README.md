@@ -1,34 +1,103 @@
-# crow-plugins-mirror
+# container-mirror
 
-Mirrors selected images from `codefloe.com/crow-plugins` to `quay.io/amrkmn/crow`.
+Mirrors container images from multiple source registries to target registries.
 
-## Using the mirror
+## Sources mirrored
 
-Update image references to point at the mirror:
+Defined in [`mirrors.json`](./mirrors.json):
 
-```env
-codefloe.com/crow-plugins/ansible       → quay.io/amrkmn/crow/ansible 
-codefloe.com/crow-plugins/auto-releaser → quay.io/amrkmn/crow/auto-releaser
-codefloe.com/crow-plugins/clone         → quay.io/amrkmn/crow/clone
-codefloe.com/crow-plugins/docker-buildx → quay.io/amrkmn/crow/docker-buildx
-codefloe.com/crow-plugins/renovate      → quay.io/amrkmn/crow/renovate
-codefloe.com/crow-plugins/sccache       → quay.io/amrkmn/crow/sccache
+| Source | Target | Images |
+|--------|--------|--------|
+| `codefloe.com/crow-plugins` | `quay.io/amrkmn/crow` | ansible, auto-releaser, clone, docker-buildx, renovate, sccache |
+| `codeberg.org/forgejo` | `quay.io/amrkmn/forgejo` | forgejo, runner |
+
+To add a new mirror group, add an entry to `mirrors.json`.
+
+## Environment
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MIRRORS_FILE` | `mirrors.json` | Path to mirror group definitions |
+| `REGISTRY_CREDENTIALS` | — | JSON string with registry credentials |
+| `REGISTRY_CREDENTIALS_FILE` | `.creds.json` | Path to credentials JSON file |
+| `TAG_FILTER` | `.*` | ERE regex for tags to sync |
+| `MAX_JOBS` | `4` | Parallel image mirrors per group |
+| `DRY_RUN` | `false` | `true` = print copies without executing |
+
+### Single-group mode (ad-hoc)
+
+For quick one-off runs, set `SOURCE`, `TARGET`, and `IMAGES` directly — the script uses these instead of `mirrors.json`:
+
+```bash
+SOURCE=codefloe.com/crow-plugins \
+  TARGET=quay.io/amrkmn/crow \
+  IMAGES="ansible clone" \
+  bash ./container-mirror.sh
 ```
 
-## Important
+## Credentials
 
-To use `quay.io/amrkmn/crow/clone`, update `CROW_PLUGINS_TRUSTED_CLONE` as documented in [CrowCI plugin env vars](https://crowci.dev/v5-9/configuration/env-vars/plugins/#plugins_trusted_clone):
+Credentials live in a JSON file (or a `REGISTRY_CREDENTIALS` secret in CI):
+
+```json
+{
+  "source": {
+    "codefloe.com": { "user": "...", "password": "..." },
+    "codeberg.org": { "user": "...", "password": "..." }
+  },
+  "destination": {
+    "quay.io": { "user": "...", "password": "..." }
+  }
+}
+```
+
+Omit entries for registries that allow anonymous pulls. The script resolves credentials per-host from this JSON for each mirror group.
+
+### Local use
+
+Copy the example and fill in credentials:
+
+```bash
+cp .creds.example.json .creds.json
+# edit .creds.json with your credentials
+```
+
+Then run — `.creds.json` is auto-discovered if present in the script directory:
+
+```bash
+bash ./container-mirror.sh
+```
+
+Or pass explicitly:
+
+```bash
+REGISTRY_CREDENTIALS_FILE=/path/to/creds.json bash ./container-mirror.sh
+```
+
+Or inline the JSON:
+
+```bash
+REGISTRY_CREDENTIALS='{...}' bash ./container-mirror.sh
+```
+
+### CI (GitHub Actions)
+
+Set a repository secret named `REGISTRY_CREDENTIALS` with the JSON above. The workflow passes it directly — no per-job credential extraction needed.
+
+## Crow plugin env vars
+
+To use the mirrored clone image, update `CROW_PLUGINS_TRUSTED_CLONE`:
 
 ```env
 CROW_PLUGINS_TRUSTED_CLONE=quay.io/amrkmn/crow/clone
 ```
 
+See [CrowCI plugin env vars](https://crowci.dev/v5-9/configuration/env-vars/plugins/#plugins_trusted_clone).
+
 ## Automation
 
-GitHub Actions runs `crow-plugins-mirror.sh` every 2 hours and also supports manual runs from the Actions tab.
+GitHub Actions runs all mirror groups every 2 hours (single job, no matrix). Manual dispatch available from the Actions tab.
 
 ## License
 
-This repository is licensed under the MIT License. See [LICENSE](./LICENSE).
-
-Mirrored images retain their respective upstream licenses. Check the upstream repositories for the applicable license of each mirrored image.
+MIT. See [LICENSE](./LICENSE). Mirrored images retain their upstream licenses.

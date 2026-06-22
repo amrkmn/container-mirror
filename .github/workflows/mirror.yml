@@ -1,4 +1,4 @@
-name: Mirror crow plugins
+name: Container mirror
 
 on:
   schedule:
@@ -21,10 +21,5 @@ jobs:
 
       - name: Run mirror script
         env:
-          SOURCE: codefloe.com/crow-plugins
-          TARGET: quay.io/amrkmn/crow
-          SOURCE_REGISTRY_USERNAME: ${{ secrets.SOURCE_REGISTRY_USERNAME }}
-          SOURCE_REGISTRY_PASSWORD: ${{ secrets.SOURCE_REGISTRY_PASSWORD }}
-          TARGET_REGISTRY_USERNAME: ${{ secrets.TARGET_REGISTRY_USERNAME }}
-          TARGET_REGISTRY_PASSWORD: ${{ secrets.TARGET_REGISTRY_PASSWORD }}
-        run: bash ./crow-plugins-mirror.sh
+          REGISTRY_CREDENTIALS: ${{ secrets.REGISTRY_CREDENTIALS }}
+        run: bash ./container-mirror.sh

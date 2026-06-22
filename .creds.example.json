@@ -1,0 +1,18 @@
+{
+    "source": {
+        "codefloe.com": {
+            "user": "",
+            "password": ""
+        },
+        "codeberg.org": {
+            "user": "",
+            "password": ""
+        }
+    },
+    "destination": {
+        "quay.io": {
+            "user": "",
+            "password": ""
+        }
+    }
+}

@@ -1,0 +1,19 @@
+[
+    {
+        "source": "codefloe.com/crow-plugins",
+        "target": "quay.io/amrkmn/crow",
+        "images": [
+            "ansible",
+            "auto-releaser",
+            "clone",
+            "docker-buildx",
+            "renovate",
+            "sccache"
+        ]
+    },
+    {
+        "source": "code.forgejo.org/forgejo",
+        "target": "quay.io/amrkmn/forgejo",
+        "images": ["forgejo", "runner"]
+    }
+]
