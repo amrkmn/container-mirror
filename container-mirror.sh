@@ -152,10 +152,14 @@ retry() {
   shift
   for (( ; i <= max; i++)); do
     "$@" && return 0
-    warn "  attempt ${i}/${max} failed: $*"
-    ((i < max)) && sleep "$((i * 5))"
+    if ((i < max)); then
+      log "  retry ${i}/${max}: $*"
+      sleep "$((i * 5))"
+    else
+      log "  failed after ${max} attempts: $*"
+      return 1
+    fi
   done
-  return 1
 }
 
 copy_image() {
@@ -166,8 +170,9 @@ copy_image() {
   if output=$(regctl image copy "$1" "$2" 2>&1); then
     return 0
   fi
-  error "copy failed: $1 -> $2"
-  while IFS= read -r line; do printf '    %s\n' "$line" >&2; done <<<"$output"
+  # ponytail: log to file, no ::error:: annotation spam. Caller aggregates.
+  log "  copy failed: $1 -> $2"
+  while IFS= read -r line; do printf '    %s\n' "$line"; done <<<"$output"
   return 1
 }
 
