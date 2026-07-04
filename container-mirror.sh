@@ -250,9 +250,10 @@ mirror_image() {
   local -a all_tags=()
   mapfile -t all_tags < <(regctl tag ls "$source/$image" 2>/dev/null)
   local filtered=0
-  for tag in "${all_tags[@]}"; do
-    [[ "$tag" =~ $TAG_FILTER ]] && tags+=("$tag")
-  done
+  local filter="${GROUP_TAG_FILTER:-$TAG_FILTER}"
+for tag in "${all_tags[@]}"; do
+  [[ "$tag" =~ $filter ]] && tags+=("$tag")
+done
   filtered=$(( ${#all_tags[@]} - ${#tags[@]} ))
   printf "  ${C_GREEN}checking${C_RESET} %s: %s tags (%d total, %d filtered)\n" \
     "$image" "${#tags[@]}" "${#all_tags[@]}" "$filtered" >&"$live_fd"
@@ -413,9 +414,10 @@ load_mirrors() {
     group_id="${target##*/}"
     mapfile -t imgs < <(jq -r '.images[]' <<<"$row")
     GROUP_TAG_IGNORE=$(jq -r '[.ignore_tags[]?] | join("|")' <<<"$row")
-    export GROUP_TAG_IGNORE
+    GROUP_TAG_FILTER=$(jq -r '.tag_filter // empty' <<<"$row")
+    export GROUP_TAG_IGNORE GROUP_TAG_FILTER
     mirror_group "$source" "$target" "$group_id" "${imgs[@]}" || rc=1
-    unset GROUP_TAG_IGNORE
+    unset GROUP_TAG_IGNORE GROUP_TAG_FILTER
   done < <(jq -c '.[]' "$MIRRORS_FILE")
   return "$rc"
 }

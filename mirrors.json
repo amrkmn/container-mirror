@@ -26,5 +26,11 @@
             "2.0.0",
             "2.0.1"
         ]
+    },
+    {
+        "source": "ghcr.io/immich-app",
+        "target": "quay.io/amrkmn/immich",
+        "images": ["immich-server", "immich-web", "immich-machine-learning"],
+        "tag_filter": "^v"
     }
 ]
