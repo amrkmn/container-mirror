@@ -13,7 +13,8 @@ readonly SCRIPT_DIR
 : "${TAG_IGNORE:=}"
 : "${MAX_JOBS:=4}"
 : "${DRY_RUN:=false}"
-readonly MIRRORS_FILE TAG_FILTER TAG_IGNORE MAX_JOBS DRY_RUN
+: "${ONLY_IMAGES:=}"
+readonly MIRRORS_FILE TAG_FILTER TAG_IGNORE MAX_JOBS DRY_RUN ONLY_IMAGES
 
 readonly STARTED_AT=$(date +%s)
 readonly TMP_DIR=$(mktemp -d)
@@ -129,7 +130,16 @@ cleanup() {
   rm -rf "$TMP_DIR"
   exit "$rc"
 }
+
+on_signal() {
+  kill $(jobs -p) 2>/dev/null
+  wait 2>/dev/null
+  exit 130
+}
+
 trap cleanup EXIT
+trap on_signal INT
+trap on_signal TERM
 
 # ── dependencies ────────────────────────────────────────────────────────
 
@@ -413,6 +423,19 @@ load_mirrors() {
     target=$(jq -r .target <<<"$row")
     group_id="${target##*/}"
     mapfile -t imgs < <(jq -r '.images[]' <<<"$row")
+    if [[ -n "${ONLY_IMAGES:-}" ]]; then
+      local -a filtered=()
+      IFS=',' read -ra wanted <<<"${ONLY_IMAGES}"
+      local img w
+      for img in "${imgs[@]}"; do
+        for w in "${wanted[@]}"; do
+          w="${w#"${w%%[![:space:]]*}"}"; w="${w%"${w##*[![:space:]]}"}"
+          [[ "$img" == "$w" ]] && { filtered+=("$img"); break; }
+        done
+      done
+      imgs=("${filtered[@]}")
+      [[ ${#imgs[@]} -eq 0 ]] && continue
+    fi
     GROUP_TAG_IGNORE=$(jq -r '[.ignore_tags[]?] | join("|")' <<<"$row")
     GROUP_TAG_FILTER=$(jq -r '.tag_filter // empty' <<<"$row")
     export GROUP_TAG_IGNORE GROUP_TAG_FILTER
