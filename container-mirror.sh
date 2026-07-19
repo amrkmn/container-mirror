@@ -14,7 +14,8 @@ readonly SCRIPT_DIR
 : "${MAX_JOBS:=4}"
 : "${DRY_RUN:=false}"
 : "${ONLY_IMAGES:=}"
-readonly MIRRORS_FILE TAG_FILTER TAG_IGNORE MAX_JOBS DRY_RUN ONLY_IMAGES
+: "${PLATFORM:=}"
+readonly MIRRORS_FILE TAG_FILTER TAG_IGNORE MAX_JOBS DRY_RUN ONLY_IMAGES PLATFORM
 
 readonly STARTED_AT=$(date +%s)
 readonly TMP_DIR=$(mktemp -d)
@@ -191,11 +192,15 @@ retry() {
 }
 
 copy_image() {
+  local platform_arg=""
+  if [[ -n "${PLATFORM:-}" || -n "${GROUP_PLATFORM:-}" ]]; then
+    platform_arg="--platform ${GROUP_PLATFORM:-$PLATFORM}"
+  fi
   if [[ "$DRY_RUN" == true ]]; then
     log "[dry-run] would copy $1 -> $2"
     return 0
   fi
-  if output=$(regctl image copy "$1" "$2" 2>&1); then
+  if output=$(regctl image copy $platform_arg "$1" "$2" 2>&1); then
     return 0
   fi
   # ponytail: source 404 = tag deleted/gc'd, skip silently.
@@ -438,9 +443,10 @@ load_mirrors() {
     fi
     GROUP_TAG_IGNORE=$(jq -r '[.ignore_tags[]?] | join("|")' <<<"$row")
     GROUP_TAG_FILTER=$(jq -r '.tag_filter // empty' <<<"$row")
-    export GROUP_TAG_IGNORE GROUP_TAG_FILTER
+    GROUP_PLATFORM=$(jq -r '.platform // empty' <<<"$row")
+    export GROUP_TAG_IGNORE GROUP_TAG_FILTER GROUP_PLATFORM
     mirror_group "$source" "$target" "$group_id" "${imgs[@]}" || rc=1
-    unset GROUP_TAG_IGNORE GROUP_TAG_FILTER
+    unset GROUP_TAG_IGNORE GROUP_TAG_FILTER GROUP_PLATFORM
   done < <(jq -c '.[]' "$MIRRORS_FILE")
   return "$rc"
 }
