@@ -191,26 +191,69 @@ retry() {
   done
 }
 
-copy_image() {
-  local platform_arg=""
-  if [[ -n "${PLATFORM:-}" || -n "${GROUP_PLATFORM:-}" ]]; then
-    platform_arg="--platform ${GROUP_PLATFORM:-$PLATFORM}"
+_copy_single() {
+  local src="$1" dst="$2" platform="$3" output
+  if output=$(regctl image copy --platform "$platform" "$src" "$dst" 2>&1); then
+    return 0
   fi
+  if grep -q 'MANIFEST_UNKNOWN' <<<"$output"; then
+    log "  ${C_GRAY}skipped${C_RESET} $src -> $dst (source 404)"
+    return 66
+  fi
+  log "  ${C_RED}copy failed:${C_RESET} $src -> $dst"
+  while IFS= read -r line; do printf '    %s\n' "$line"; done <<<"$output"
+  return 1
+}
+
+copy_image() {
+  local platform_list="${GROUP_PLATFORM:-$PLATFORM}"
   if [[ "$DRY_RUN" == true ]]; then
     log "[dry-run] would copy $1 -> $2"
     return 0
   fi
-  if output=$(regctl image copy $platform_arg "$1" "$2" 2>&1); then
-    return 0
+
+  if [[ -z "$platform_list" ]]; then
+    local output
+    if output=$(regctl image copy "$1" "$2" 2>&1); then
+      return 0
+    fi
+    if grep -q 'MANIFEST_UNKNOWN' <<<"$output"; then
+      log "  ${C_GRAY}skipped${C_RESET} $1 -> $2 (source 404)"
+      return 66
+    fi
+    log "  ${C_RED}copy failed:${C_RESET} $1 -> $2"
+    while IFS= read -r line; do printf '    %s\n' "$line"; done <<<"$output"
+    return 1
   fi
-  # ponytail: source 404 = tag deleted/gc'd, skip silently.
-  if grep -q 'MANIFEST_UNKNOWN' <<<"$output"; then
-    log "  ${C_GRAY}skipped${C_RESET} $1 -> $2 (source 404)"
-    return 66
+
+  if [[ "$platform_list" != *,* ]]; then
+    _copy_single "$1" "$2" "$platform_list"
+    return
   fi
-  log "  ${C_RED}copy failed:${C_RESET} $1 -> $2"
-  while IFS= read -r line; do printf '    %s\n' "$line"; done <<<"$output"
-  return 1
+
+  # Multiple platforms: copy each to temp tag, then build index.
+  local -a platforms ref tags
+  IFS=',' read -ra platforms <<<"$platform_list"
+  local rc=0 dst="$2"
+  local tmp_base="${dst}-tmp"
+  for p in "${platforms[@]}"; do
+    p="${p#"${p%%[![:space:]]*}"}"; p="${p%"${p##*[![:space:]]}"}"
+    local tmp="${tmp_base}-${p//\//_}"
+    _copy_single "$1" "$tmp" "$p" || return $?
+    ref+=("$tmp")
+    tags+=("$tmp")
+  done
+
+  local -a index_args=("$dst")
+  for i in "${!tags[@]}"; do
+    index_args+=(--ref "${ref[$i]}" --platform "${platforms[$i]}")
+  done
+  if ! regctl index create "${index_args[@]}" 2>/dev/null; then
+    log "  ${C_RED}index create failed:${C_RESET} $dst"
+    rc=1
+  fi
+  for t in "${tags[@]}"; do regctl tag delete "$t" 2>/dev/null; done
+  return $rc
 }
 
 copy_if_changed() {
