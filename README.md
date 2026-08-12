@@ -1,103 +1,108 @@
-# container-mirror
+# Container Mirror
 
-Mirrors container images from multiple source registries to target registries.
+This project copies container images from one registry to another.
 
-## Sources mirrored
+The mirror list is stored in [`mirrors.json`](./mirrors.json). The scheduled
+GitHub Actions workflow runs the mirror every two hours.
 
-Defined in [`mirrors.json`](./mirrors.json):
+## Run Locally
 
-| Source                      | Target                   | Images                                                          |
-| --------------------------- | ------------------------ | --------------------------------------------------------------- |
-| `codefloe.com/crow-plugins` | `quay.io/amrkmn/crow`    | ansible, auto-releaser, clone, docker-buildx, renovate, sccache |
-| `codeberg.org/forgejo`      | `quay.io/amrkmn/forgejo` | forgejo, runner                                                 |
+Requirements:
 
-To add a new mirror group, add an entry to `mirrors.json`.
+- Python 3.10 or newer
+- [`uv`](https://docs.astral.sh/uv/)
+- [`regctl`](https://github.com/regclient/regclient/releases)
 
-## Environment
+Create a credentials file:
 
-| Variable                    | Default        | Description                             |
-| --------------------------- | -------------- | --------------------------------------- |
-| `MIRRORS_FILE`              | `mirrors.json` | Path to mirror group definitions        |
-| `REGISTRY_CREDENTIALS`      | —              | JSON string with registry credentials   |
-| `REGISTRY_CREDENTIALS_FILE` | `.creds.json`  | Path to credentials JSON file           |
-| `TAG_FILTER`                | `.*`           | ERE regex for tags to sync              |
-| `MAX_JOBS`                  | `4`            | Parallel image mirrors per group        |
-| `DRY_RUN`                   | `false`        | `true` = print copies without executing |
+```bash
+cp .creds.example.json .creds.json
+```
 
-### Single-group mode (ad-hoc)
+Edit `.creds.json`, then run:
 
-For quick one-off runs, set `SOURCE`, `TARGET`, and `IMAGES` directly — the script uses these instead of `mirrors.json`:
+```bash
+uv run --script container-mirror.py
+```
+
+You can also provide credentials with `REGISTRY_CREDENTIALS` or set
+`REGISTRY_CREDENTIALS_FILE` to another file.
+
+## One-Time Mirror
+
+Set `SOURCE`, `TARGET`, and `IMAGES` to mirror images without editing
+`mirrors.json`:
 
 ```bash
 SOURCE=codefloe.com/crow-plugins \
-  TARGET=quay.io/amrkmn/crow \
-  IMAGES="ansible clone" \
-  bash ./container-mirror.sh
+TARGET=quay.io/amrkmn/crow \
+IMAGES="ansible clone" \
+uv run --script container-mirror.py
 ```
+
+## Configuration
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `MIRRORS_FILE` | `mirrors.json` | Mirror definitions file |
+| `REGISTRY_CREDENTIALS_FILE` | `.creds.json` | Credentials file |
+| `REGISTRY_CREDENTIALS` | unset | Credentials as a JSON string |
+| `TAG_FILTER` | `.*` | Regular expression for tags to mirror |
+| `TAG_IGNORE` | unset | Comma, pipe, or regular-expression tag exclusions |
+| `MAX_JOBS` | `4` | Images mirrored at the same time |
+| `TAG_JOBS` | `4` | Tags checked at the same time for each image |
+| `MIRROR_CACHE` | `.mirror-cache.json` | Digest cache file |
+| `CACHE_TTL` | `0` | Hours to trust a cached source digest |
+| `DRY_RUN` | `false` | Show planned copies without copying |
+| `PLATFORM` | unset | Platform to copy, such as `linux/amd64` |
 
 ## Credentials
 
-Credentials live in a JSON file (or a `REGISTRY_CREDENTIALS` secret in CI):
+Credentials use this format:
 
 ```json
 {
     "source": {
-        "codefloe.com": { "user": "...", "password": "..." },
-        "codeberg.org": { "user": "...", "password": "..." }
+        "registry.example.com": {
+            "user": "username",
+            "password": "password"
+        }
     },
     "destination": {
-        "quay.io": { "user": "...", "password": "..." }
+        "quay.io": {
+            "user": "username",
+            "password": "password"
+        }
     }
 }
 ```
 
-Omit entries for registries that allow anonymous pulls. The script resolves credentials per-host from this JSON for each mirror group.
+Source registries may be anonymous. Destination credentials are required.
 
-### Local use
+## Cache
 
-Copy the example and fill in credentials:
+The script stores the last known source digest for each tag in
+`.mirror-cache.json`.
 
-```bash
-cp .creds.example.json .creds.json
-# edit .creds.json with your credentials
-```
+With the default `CACHE_TTL=0`, every tag checks both registries. This detects
+deleted or changed destination tags and repairs them.
 
-Then run — `.creds.json` is auto-discovered if present in the script directory:
+With `CACHE_TTL` set, a tag skips the source check only when the destination
+still has the cached digest. If the destination is missing or different, the
+script checks the source and copies the image when needed. Mutable tags such as
+`latest` can remain stale for up to the configured TTL.
 
-```bash
-bash ./container-mirror.sh
-```
+The GitHub Actions workflow restores the latest cache and saves an updated
+cache after each run.
 
-Or pass explicitly:
+## GitHub Actions
 
-```bash
-REGISTRY_CREDENTIALS_FILE=/path/to/creds.json bash ./container-mirror.sh
-```
+The workflow runs from `.github/workflows/mirror.yml`:
 
-Or inline the JSON:
-
-```bash
-REGISTRY_CREDENTIALS='{...}' bash ./container-mirror.sh
-```
-
-### CI (GitHub Actions)
-
-Set a repository secret named `REGISTRY_CREDENTIALS` with the JSON above. The workflow passes it directly — no per-job credential extraction needed.
-
-## Crow plugin env vars
-
-To use the mirrored clone image, update `CROW_PLUGINS_TRUSTED_CLONE`:
-
-```env
-CROW_PLUGINS_TRUSTED_CLONE=quay.io/amrkmn/crow/clone
-```
-
-See [CrowCI plugin env vars](https://crowci.dev/v5-9/configuration/env-vars/plugins/#plugins_trusted_clone).
-
-## Automation
-
-GitHub Actions runs all mirror groups every 2 hours (single job, no matrix). Manual dispatch available from the Actions tab.
+- Scheduled every two hours
+- Also available through manual dispatch
+- Reads credentials from the `REGISTRY_CREDENTIALS` repository secret
 
 ## License
 
-MIT. See [LICENSE](./LICENSE). Mirrored images retain their upstream licenses.
+MIT. See [`LICENSE`](./LICENSE).

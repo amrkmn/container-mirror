@@ -1,1 +1,4 @@
 .creds.json
+.mirror-cache.json
+.mirror-cache.json.tmp
+__pycache__/
