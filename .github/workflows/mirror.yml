@@ -11,23 +11,22 @@ jobs:
         permissions:
             contents: read
             actions: write
-        env:
-            NO_COLOR: "1"
         steps:
             - name: Check out repository
               uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
             - name: Restore mirror cache
-              uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+              uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
               with:
                   path: .mirror-cache.json
                   key: mirror-cache-v1-${{ hashFiles('mirrors.json') }}-${{ github.run_id }}
                   restore-keys: |
                       mirror-cache-v1-${{ hashFiles('mirrors.json') }}-
-                  save-always: true
 
             - name: Install uv
               uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+              with:
+                  enable-cache: false
 
             - name: Install regctl
               uses: regclient/actions/regctl-installer@main
@@ -36,3 +35,10 @@ jobs:
               env:
                   REGISTRY_CREDENTIALS: ${{ secrets.REGISTRY_CREDENTIALS }}
               run: uv run --script container-mirror.py
+
+            - name: Save mirror cache
+              if: always()
+              uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+              with:
+                  path: .mirror-cache.json
+                  key: mirror-cache-v1-${{ hashFiles('mirrors.json') }}-${{ github.run_id }}

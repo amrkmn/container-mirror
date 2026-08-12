@@ -62,31 +62,37 @@ else:
 
 PRINT_LOCK = threading.Lock()
 LOGIN_LOCK = threading.Lock()  # regctl login writes a shared config file
+LOG_CONTEXT = threading.local()
+
+
+def _active_log_buffer():
+    return getattr(LOG_CONTEXT, "messages", None)
 
 
 def log(*args):
+    line = " ".join(str(arg) for arg in args)
+    messages = _active_log_buffer()
+    if messages is not None:
+        messages.append(line)
+        return
     with PRINT_LOCK:
-        print(*args, flush=True)
+        print(line, flush=True)
 
 
-def gh_annotation(level: str, msg: str):
-    if GITHUB_ACTIONS:
-        print(f"::{level}::{msg}", flush=True)
+def event(name: str, color: str) -> str:
+    return f"{color}{name}{C_RESET}"
 
 
 def notice(msg: str):
-    gh_annotation("notice", msg)
     log(msg)
 
 
 def warn(msg: str):
-    gh_annotation("warning", msg)
-    log(f"warning: {msg}")
+    log(f"{event('WARNING', C_RED)} {msg}")
 
 
 def error(msg: str):
-    gh_annotation("error", msg)
-    print(f"error: {msg}", file=sys.stderr, flush=True)
+    log(f"{event('ERROR', C_RED)} {msg}")
 
 
 def elapsed_str(s: int) -> str:
@@ -102,8 +108,12 @@ def _regctl_stderr(args, input_text=None) -> int:
         input=input_text,
         text=True,
         check=False,
-        stderr=None if VERBOSE else subprocess.DEVNULL,
+        stdout=subprocess.PIPE if VERBOSE else subprocess.DEVNULL,
+        stderr=subprocess.PIPE if VERBOSE else subprocess.DEVNULL,
     )
+    if VERBOSE:
+        for line in ((p.stdout or "") + (p.stderr or "")).splitlines():
+            log(f"  {event('REGISTRY', C_GRAY)} {line}")
     return p.returncode
 
 
@@ -128,6 +138,7 @@ def write_summary():
     lines.append(f"tags checked  {stat_sum('tags')}")
     lines.append(f"copied        {stat_sum('copied')}")
     lines.append(f"current       {stat_sum('current')}")
+    lines.append(f"skipped       {stat_sum('skipped')}")
     lines.append(f"failed        {total_failed}")
     if STATS:
         lines.append("\nimages")
@@ -151,9 +162,14 @@ def _signal_handler(_signum, _frame):
 
 
 def _exit_on_interrupt():
-    save_cache()
-    write_summary()
-    os._exit(130)  # match the old trap INT/TERM behavior: kill jobs, exit 130
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    try:
+        log(f"{event('INTERRUPTED', C_RED)} stopping mirror; cancelling queued work")
+        save_cache()
+        write_summary()
+    finally:
+        os._exit(130)  # match the old trap INT/TERM behavior: kill jobs, exit 130
 
 
 # ── cache ────────────────────────────────────────────────────────────────
@@ -205,24 +221,25 @@ def check_deps():
 
 # ── registry auth ───────────────────────────────────────────────────────
 
-def regctl_login(host: str, user: str, password: str, required: bool):
+def regctl_login(host: str, user: str, password: str, required: bool, scope: str = ""):
+    prefix = f"[{scope}] " if scope else ""
     with LOGIN_LOCK:  # registry login writes ~/.config/regctl/regctl.config
         if not user and not password:
             if required:
-                error(f"no credentials for {host}")
+                error(f"{event('AUTH', C_CYAN)} {prefix}no credentials for {host}")
                 sys.exit(1)
-            log(f"using anonymous access for {host}")
+            log(f"  {event('AUTH', C_CYAN)} {prefix}anonymous access for {host}")
             return
         if not user or not password:
-            error(f"incomplete credentials for {host}")
+            error(f"{event('AUTH', C_CYAN)} {prefix}incomplete credentials for {host}")
             sys.exit(1)
         rc = _regctl_stderr(
             ["registry", "login", host, "-u", user, "--pass-stdin"], input_text=password + "\n"
         )
         if rc != 0:
-            error(f"regctl login failed for {host}")
+            error(f"{event('AUTH', C_CYAN)} {prefix}regctl login failed for {host}")
             sys.exit(1)
-        log(f"  logged in to {host}")
+        log(f"  {event('AUTH', C_CYAN)} {prefix}logged in to {host}")
 
 
 # ── image operations ────────────────────────────────────────────────────
@@ -234,11 +251,15 @@ def tag_list(repo: str):
 
 
 def image_digest(ref: str):
-    """Return (rc, digest). On failure the real regctl error is surfaced to stderr."""
+    """Return (rc, digest), recording command output in the active log."""
     p = subprocess.run(["regctl", "image", "digest", ref], capture_output=True, text=True, check=False)
     if p.returncode == 0:
         return 0, p.stdout.strip()
-    sys.stderr.write(p.stdout + p.stderr)
+    output = (p.stdout + p.stderr).strip()
+    if output:
+        log(f"{event('DIGEST', C_RED)} failed: {ref}")
+        for line in output.splitlines():
+            log(f"  {event('REGISTRY', C_GRAY)} {line}")
     return p.returncode, None
 
 
@@ -250,10 +271,10 @@ def retry(max_attempts: int, label: str, attempt):
         if rc == 0 or rc == 66:
             return rc
         if i < max_attempts:
-            log(f"  retry {i}/{max_attempts}: {label}")
+            log(f"{event('RETRY', C_MAGENTA)} attempt={i}/{max_attempts}: {label}")
             time.sleep(i * 5)
         else:
-            log(f"  failed after {max_attempts} attempts: {label}")
+            log(f"{event('FAILED', C_RED)} attempts={max_attempts}: {label}")
     return rc
 
 
@@ -263,11 +284,11 @@ def _run_copy(args, src: str, dst: str) -> int:
         return 0
     output = p.stdout + p.stderr
     if "MANIFEST_UNKNOWN" in output:
-        log(f"  {C_GRAY}skipped{C_RESET} {src} -> {dst} (source 404)")
+        log(f"{event('SKIP', C_GRAY)} {src} -> {dst} (source 404)")
         return 66
-    log(f"  {C_RED}copy failed:{C_RESET} {src} -> {dst}")
+    log(f"{event('COPY', C_RED)} failed: {src} -> {dst}")
     for line in output.splitlines():
-        log(f"    {line}")
+        log(f"  {event('REGISTRY', C_GRAY)} {line}")
     return 1
 
 
@@ -278,7 +299,7 @@ def _copy_single(src: str, dst: str, platform: str) -> int:
 def copy_image(src: str, dst: str, group_platform: str) -> int:
     platform_list = group_platform or PLATFORM
     if DRY_RUN:
-        log(f"[dry-run] would copy {src} -> {dst}")
+        log(f"{event('COPY', C_GREEN)} planned (dry-run): {src} -> {dst}")
         return 0
 
     if not platform_list:
@@ -305,7 +326,9 @@ def copy_image(src: str, dst: str, group_platform: str) -> int:
             index_args += ["--ref", ref, "--platform", p]
         p = subprocess.run(["regctl", "index", "create", *index_args], capture_output=True, text=True, check=False)
         if p.returncode != 0:
-            log(f"  {C_RED}index create failed:{C_RESET} {dst}")
+            log(f"{event('INDEX', C_RED)} failed: {dst}")
+            for line in (p.stdout + p.stderr).splitlines():
+                log(f"  {event('REGISTRY', C_GRAY)} {line}")
             rc = 1
     finally:
         for t in tags:
@@ -371,15 +394,28 @@ def mirror_image(image: str, source: str, target: str, group_id: str,
     copied = current = failed = skipped = 0
     start = time.time()
 
-    # Live lines ("checking", "copied") go straight to the terminal; the rest
-    # of the per-image output is buffered and flushed as a block when done.
-    buf = []
-
-    with ThreadPoolExecutor(max_workers=2) as ls_pool:
+    ls_pool = ThreadPoolExecutor(max_workers=2)
+    interrupted = False
+    try:
         src_fut = ls_pool.submit(tag_list, f"{source}/{image}")
         dst_fut = ls_pool.submit(tag_list, f"{target}/{image}")
-        _, all_tags = src_fut.result()
+        source_ok, all_tags = src_fut.result()
         dest_ok, dest_tags = dst_fut.result()
+    except KeyboardInterrupt:
+        interrupted = True
+        raise
+    finally:
+        ls_pool.shutdown(wait=not interrupted, cancel_futures=interrupted)
+    if not source_ok:
+        log(f"  {event('FAIL', C_RED)} [{group_id}/{image}] unable to list source tags")
+        STATS[(group_id, image)] = {
+            "tags": 0, "copied": 0, "current": 0,
+            "failed": 1, "skipped": 0, "elapsed": elapsed_str(int(time.time() - start)),
+        }
+        return 1
+    if not dest_ok:
+        log(f"  {event('WARNING', C_RED)} [{group_id}/{image}] unable to list destination tags; "
+            "treating destination as empty")
     dest_tags = set(dest_tags) if dest_ok else set()
     repo_key = f"{source}/{image}"
 
@@ -391,52 +427,74 @@ def mirror_image(image: str, source: str, target: str, group_id: str,
     tags = [t for t in all_tags if re_filter.search(t)]
     filtered = len(all_tags) - len(tags)
 
-    log(f"  {C_GREEN}checking{C_RESET} {image}: {len(tags)} tags ({len(all_tags)} total, {filtered} filtered)")
+    log(f"  {event('START', C_GREEN)} [{group_id}/{image}] checking {len(tags)} tags "
+        f"({len(all_tags)} total, {filtered} filtered)")
 
     def process_tag(tag: str):
-        if _tag_ignored(tag, group_ignore):
-            return tag, 66, None
-        src = f"{source}/{image}:{tag}"
-        dst = f"{target}/{image}:{tag}"
-        if dest_ok and tag not in dest_tags:
-            # New tag: copy directly, no digest comparison needed.
-            rc = retry(5, f"copy {src} -> {dst}",
-                       lambda: copy_image(src, dst, group_platform))
-            if rc != 0:
-                return tag, rc, None
-            if DRY_RUN:
-                return tag, 0, None
-            _, digest = image_digest(src)  # remember the digest we just mirrored
-            return tag, 0, (tag, digest) if digest else None
-        cached = CACHE.get(repo_key, {}).get(tag) or {}
-        if cached.get("d") and CACHE_TTL and time.time() - cached.get("t", 0) < CACHE_TTL * 3600:
-            # The cached source digest is only useful if the destination still
-            # has that digest. Otherwise fetch the source and repair drift.
-            rc, dst_digest = image_digest(dst)
-            if rc == 0 and dst_digest == cached["d"]:
-                return tag, 10, None
-        rc, src_digest = copy_if_changed(src, dst, group_platform)
-        hint = (tag, src_digest) if rc in (0, 10) and src_digest else None
-        return tag, rc, hint
+        messages = []
+        LOG_CONTEXT.messages = messages
+        try:
+            if _tag_ignored(tag, group_ignore):
+                return tag, 66, None, messages
+            src = f"{source}/{image}:{tag}"
+            dst = f"{target}/{image}:{tag}"
+            if dest_ok and tag not in dest_tags:
+                # New tag: copy directly, no digest comparison needed.
+                rc = retry(5, f"copy {src} -> {dst}",
+                           lambda: copy_image(src, dst, group_platform))
+                if rc != 0:
+                    return tag, rc, None, messages
+                if DRY_RUN:
+                    return tag, 0, None, messages
+                _, digest = image_digest(src)  # remember the digest we just mirrored
+                return tag, 0, (tag, digest) if digest else None, messages
+            cached = CACHE.get(repo_key, {}).get(tag) or {}
+            if cached.get("d") and CACHE_TTL and time.time() - cached.get("t", 0) < CACHE_TTL * 3600:
+                # The cached source digest is only useful if the destination still
+                # has that digest. Otherwise fetch the source and repair drift.
+                rc, dst_digest = image_digest(dst)
+                if rc == 0 and dst_digest == cached["d"]:
+                    return tag, 10, None, messages
+            rc, src_digest = copy_if_changed(src, dst, group_platform)
+            hint = (tag, src_digest) if rc in (0, 10) and src_digest else None
+            return tag, rc, hint, messages
+        except (OSError, RuntimeError, ValueError) as exc:
+            log(f"{event('ERROR', C_RED)} unexpected error: {exc!r}")
+            return tag, 1, None, messages
+        finally:
+            del LOG_CONTEXT.messages
 
     hints = []
-    with ThreadPoolExecutor(max_workers=TAG_JOBS, thread_name_prefix="tag") as pool:
+    results = {}
+    total = len(tags)
+    progress_every = max(10, min(50, total // 10 or 1))
+    completed = 0
+    pool = ThreadPoolExecutor(max_workers=TAG_JOBS, thread_name_prefix="tag")
+    interrupted = False
+    try:
         futures = [pool.submit(process_tag, tag) for tag in tags]
         for fut in as_completed(futures):
-            tag, rc, hint = fut.result()
+            tag, rc, hint, messages = fut.result()
+            results[tag] = (rc, messages)
+            completed += 1
             if hint:
                 hints.append(hint)
             if rc == 0:
                 copied += 1
-                line = f"  {C_GREEN}copied{C_RESET}  {image}:{tag}"
-                log(line)
-                buf.append(line)
             elif rc == 10:
                 current += 1
             elif rc == 66:
                 skipped += 1
             else:
                 failed += 1
+            if completed < total and completed % progress_every == 0:
+                log(f"    {event('PROGRESS', C_GRAY)} [{group_id}/{image}] {completed}/{total} checked "
+                    f"copied={copied} current={current} skipped={skipped} failed={failed}")
+    except KeyboardInterrupt:
+        interrupted = True
+        raise
+    finally:
+        pool.shutdown(wait=not interrupted, cancel_futures=interrupted)
 
     if hints and not DRY_RUN:
         with CACHE_LOCK:
@@ -450,15 +508,24 @@ def mirror_image(image: str, source: str, target: str, group_id: str,
                     del repo_cache[t]
 
     elapsed = elapsed_str(int(time.time() - start))
+    report = []
     if copied > 0:
-        buf.append(f"  {C_MAGENTA}done{C_RESET} {image}: copied={copied} current={current} "
-                   f"skipped={skipped} failed={failed} {C_GRAY}({elapsed}){C_RESET}")
+        report.append(f"  {event('DONE', C_MAGENTA)} [{group_id}/{image}] copied={copied} current={current} "
+                      f"skipped={skipped} failed={failed} ({elapsed})")
     else:
-        buf.append(f"  {C_MAGENTA}done{C_RESET} {image}: no changes, current={current} "
-                   f"skipped={skipped} failed={failed} {C_GRAY}({elapsed}){C_RESET}")
+        report.append(f"  {event('DONE', C_MAGENTA)} [{group_id}/{image}] no changes, current={current} "
+                      f"skipped={skipped} failed={failed} ({elapsed})")
+    for tag in sorted(results):
+        rc, messages = results[tag]
+        if rc == 0:
+            report.append(f"    {event('COPY', C_GREEN)} {image}:{tag}")
+        if messages:
+            report.append(f"    {event('DETAIL', C_GRAY)} [{tag}]")
+            report.extend(f"      {message}" for message in messages)
+        elif rc not in (0, 10, 66):
+            report.append(f"    {event('FAILED', C_RED)} {image}:{tag}")
     with PRINT_LOCK:
-        for line in buf:
-            print(line, flush=True)
+        print("\n".join(report), flush=True)
 
     STATS[(group_id, image)] = {
         "tags": len(tags), "copied": copied, "current": current,
@@ -472,7 +539,9 @@ def mirror_image(image: str, source: str, target: str, group_id: str,
 def run_parallel(group_id: str, source: str, target: str, images: list[str],
                  group_ignore: str, group_filter: str, group_platform: str) -> int:
     failed = 0
-    with ThreadPoolExecutor(max_workers=MAX_JOBS, thread_name_prefix="mirror") as pool:
+    pool = ThreadPoolExecutor(max_workers=MAX_JOBS, thread_name_prefix="mirror")
+    interrupted = False
+    try:
         futures = [
             pool.submit(mirror_image, img, source, target, group_id,
                         group_ignore, group_filter, group_platform)
@@ -481,6 +550,11 @@ def run_parallel(group_id: str, source: str, target: str, images: list[str],
         for fut in as_completed(futures):
             if fut.result() != 0:
                 failed = 1
+    except KeyboardInterrupt:
+        interrupted = True
+        raise
+    finally:
+        pool.shutdown(wait=not interrupted, cancel_futures=interrupted)
     return failed
 
 
@@ -537,10 +611,10 @@ def mirror_group(source: str, target: str, group_id: str, images: list[str],
         if not tgt_pass:
             tgt_pass = cred_field(tgt_host, "destination", "password")
 
-    notice(f"{C_CYAN}[{group_id}]{C_RESET} {source} -> {target}")
+    notice(f"{event('GROUP', C_CYAN)} [{group_id}] {source} -> {target} ({len(images)} images)")
 
-    regctl_login(src_host, src_user, src_pass, False)
-    regctl_login(tgt_host, tgt_user, tgt_pass, True)
+    regctl_login(src_host, src_user, src_pass, False, group_id)
+    regctl_login(tgt_host, tgt_user, tgt_pass, True, group_id)
 
     return run_parallel(group_id, source, target, images,
                         group_ignore, group_filter, group_platform)
@@ -581,6 +655,7 @@ def load_mirrors() -> int:
     IMAGE_COUNT = sum(len(g.get("images", [])) for g in groups)
     wanted = [w.strip() for w in ONLY_IMAGES.split(",")] if ONLY_IMAGES else []
     rc = 0
+    group_counts = {}
 
     # ponytail: mirror groups hit different source registries, so run them
     # concurrently instead of sequentially (this was another serial bottleneck).
@@ -590,12 +665,15 @@ def load_mirrors() -> int:
             continue
         source = str(group.get("source", ""))
         target = str(group.get("target", ""))
-        group_id = basename_of(target)
+        base_group_id = basename_of(target)
         imgs = [str(i) for i in group.get("images", [])]
         if wanted:
             imgs = [img for img in imgs if img in wanted]
             if not imgs:
                 continue
+        group_counts[base_group_id] = group_counts.get(base_group_id, 0) + 1
+        occurrence = group_counts[base_group_id]
+        group_id = base_group_id if occurrence == 1 else f"{base_group_id}#{occurrence}"
         group_ignore = "|".join(str(t) for t in group.get("ignore_tags", []) if t)
         group_filter = str(group.get("tag_filter", "") or "")
         group_platform = str(group.get("platform", "") or "")
@@ -603,11 +681,22 @@ def load_mirrors() -> int:
                      group_ignore, group_filter, group_platform))
 
     if jobs:
-        with ThreadPoolExecutor(max_workers=min(len(jobs), 4), thread_name_prefix="group") as pool:
-            futures = [pool.submit(mirror_group, *job) for job in jobs]
+        pool = ThreadPoolExecutor(max_workers=min(len(jobs), 4), thread_name_prefix="group")
+        interrupted = False
+        try:
+            futures = [
+                pool.submit(mirror_group, source, target, group_id, images,
+                            group_ignore, group_filter, group_platform)
+                for source, target, group_id, images, group_ignore, group_filter, group_platform in jobs
+            ]
             for fut in as_completed(futures):
                 if fut.result() != 0:
                     rc = 1
+        except KeyboardInterrupt:
+            interrupted = True
+            raise
+        finally:
+            pool.shutdown(wait=not interrupted, cancel_futures=interrupted)
     return rc
 
 
@@ -622,8 +711,7 @@ def main() -> int:
     load_creds()
     run_status = load_mirrors()
 
-    notice("")
-    notice(f"mirror complete: copied={stat_sum('copied')} current={stat_sum('current')} "
+    notice(f"{event('SUMMARY', C_MAGENTA)} mirror complete: copied={stat_sum('copied')} current={stat_sum('current')} "
            f"skipped={stat_sum('skipped')} failed={stat_sum('failed')}")
     save_cache()  # bash ran this from its EXIT trap; persisted for CI via actions/cache
     write_summary()

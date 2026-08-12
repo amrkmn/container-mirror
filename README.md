@@ -95,6 +95,27 @@ script checks the source and copies the image when needed. Mutable tags such as
 The GitHub Actions workflow restores the latest cache and saves an updated
 cache after each run.
 
+## Logs
+
+The runner keeps tag-worker details together by image instead of printing them
+from worker threads. Logs use this shape:
+
+```text
+GROUP [crow] codefloe.com/crow-plugins -> quay.io/amrkmn/crow (6 images)
+  AUTH [crow] logged in to quay.io
+  START [crow/ansible] checking 12 tags (12 total, 0 filtered)
+    PROGRESS [crow/ansible] 10/12 checked copied=0 current=10 skipped=0 failed=0
+  DONE [crow/ansible] no changes, current=12 skipped=0 failed=0 (3s)
+```
+
+Long-running images emit periodic progress lines. Copies, retries, registry
+errors, and unexpected failures are printed in one sorted block after that
+image finishes, so output from different images cannot interleave.
+
+Press `Ctrl+C` to cancel queued work immediately. The runner preserves the
+current cache and GitHub summary, then exits with status `130`; already-running
+registry commands are terminated when the process exits.
+
 ## GitHub Actions
 
 The workflow runs from `.github/workflows/mirror.yml`:
