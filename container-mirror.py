@@ -246,8 +246,12 @@ def regctl_login(host: str, user: str, password: str, required: bool, scope: str
 
 def tag_list(repo: str):
     """Return (ok, tags) for a repo. ok is False on registry errors (e.g. 404)."""
-    p = subprocess.run(["regctl", "tag", "ls", repo], capture_output=True, text=True, check=False)
-    return p.returncode == 0, [t for t in p.stdout.splitlines() if t]
+    for _ in range(3):
+        p = subprocess.run(["regctl", "tag", "ls", repo], capture_output=True, text=True, check=False)
+        if p.returncode == 0:
+            return True, [t for t in p.stdout.splitlines() if t]
+        time.sleep(2)
+    return False, []
 
 
 def image_digest(ref: str):
@@ -407,12 +411,14 @@ def mirror_image(image: str, source: str, target: str, group_id: str,
     finally:
         ls_pool.shutdown(wait=not interrupted, cancel_futures=interrupted)
     if not source_ok:
-        log(f"  {event('FAIL', C_RED)} [{group_id}/{image}] unable to list source tags")
+        # A transient registry hiccup on one image shouldn't fail the whole run.
+        # Return a distinct code so the group can detect a real (whole-group) outage.
+        log(f"  {event('WARNING', C_RED)} [{group_id}/{image}] unable to list source tags")
         STATS[(group_id, image)] = {
             "tags": 0, "copied": 0, "current": 0,
             "failed": 1, "skipped": 0, "elapsed": elapsed_str(int(time.time() - start)),
         }
-        return 1
+        return 2
     if not dest_ok:
         log(f"  {event('WARNING', C_RED)} [{group_id}/{image}] unable to list destination tags; "
             "treating destination as empty")
@@ -539,6 +545,8 @@ def mirror_image(image: str, source: str, target: str, group_id: str,
 def run_parallel(group_id: str, source: str, target: str, images: list[str],
                  group_ignore: str, group_filter: str, group_platform: str) -> int:
     failed = 0
+    listing_failed = 0
+    total = len(images)
     pool = ThreadPoolExecutor(max_workers=MAX_JOBS, thread_name_prefix="mirror")
     interrupted = False
     try:
@@ -548,14 +556,21 @@ def run_parallel(group_id: str, source: str, target: str, images: list[str],
             for img in images
         ]
         for fut in as_completed(futures):
-            if fut.result() != 0:
+            rc = fut.result()
+            if rc == 2:
+                listing_failed += 1
+            elif rc != 0:
                 failed = 1
     except KeyboardInterrupt:
         interrupted = True
         raise
     finally:
         pool.shutdown(wait=not interrupted, cancel_futures=interrupted)
-    return failed
+    # A single image failing to list is tolerated; only fail when the whole
+    # group is unreachable (real outage) or copies actually failed.
+    if failed or (total > 0 and listing_failed == total):
+        return 1
+    return 0
 
 
 # ── credentials ─────────────────────────────────────────────────────────
