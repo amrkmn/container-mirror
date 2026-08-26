@@ -30,16 +30,17 @@
     {
         "source": "ghcr.io/immich-app",
         "target": "quay.io/amrkmn/immich",
-        "images": [
-            "immich-server",
-            "immich-web",
-            "immich-machine-learning"
-        ],
+        "images": ["immich-server", "immich-web", "immich-machine-learning"],
         "tag_filter": "^v"
     },
     {
         "source": "ghcr.io/immich-app",
         "target": "quay.io/amrkmn/immich",
         "images": ["postgres"]
+    },
+    {
+        "source": "ghcr.io/tcpipuk",
+        "target": "quay.io/amrkmn",
+        "images": ["act-runner"]
     }
 ]
