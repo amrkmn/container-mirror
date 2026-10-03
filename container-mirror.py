@@ -287,7 +287,7 @@ def _run_copy(args, src: str, dst: str) -> int:
     if p.returncode == 0:
         return 0
     output = p.stdout + p.stderr
-    if "MANIFEST_UNKNOWN" in output:
+    if "MANIFEST_UNKNOWN" in output or "BLOB_UNKNOWN" in output:
         log(f"{event('SKIP', C_GRAY)} {src} -> {dst} (source 404)")
         return 66
     log(f"{event('COPY', C_RED)} failed: {src} -> {dst}")
